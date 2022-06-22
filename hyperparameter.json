@@ -1,0 +1,103 @@
+{
+    "kernel": {
+        "phase1": {
+            "path": "exp/normal2kernel",
+            "dynamic_batch_size": 1,
+            "n_epochs": 120,
+            "base_lr": 0.03,
+            "warmup_epochs": 5,
+            "warmup_lr": -1,
+            "ks_list": "3,5,7",
+            "expand_list": "6",
+            "depth_list": "4",
+            "weight_quant_list": "fp32",
+            "act_quant_list": "fp32"
+        }
+    },
+    "depth": {
+        "phase1": {
+            "path": "exp/kernel2kernel_depth/phase1",
+            "dynamic_batch_size": 2,
+            "n_epochs": 1,
+            "base_lr": 0.0025,
+            "warmup_epochs": 0,
+            "warmup_lr": -1,
+            "ks_list": "3,5,7",
+            "expand_list": "6",
+            "depth_list": "3,4",
+            "weight_quant_list": "fp32",
+            "act_quant_list": "fp32"
+        },
+        "phase2": {
+            "path": "exp/kernel2kernel_depth/phase2",
+            "dynamic_batch_size": 2,
+            "n_epochs": 5,
+            "base_lr": 0.0075,
+            "warmup_epochs": 5,
+            "warmup_lr": -1,
+            "ks_list": "3,5,7",
+            "expand_list": "6",
+            "depth_list": "2,3,4",
+            "weight_quant_list": "fp32",
+            "act_quant_list": "fp32"
+        }
+    },
+    "expand": {
+        "phase1": {
+            "path": "exp/kernel_depth2kernel_depth_width/phase1",
+            "dynamic_batch_size": 4,
+            "n_epochs": 1,
+            "base_lr": 0.0025,
+            "warmup_epochs": 0,
+            "warmup_lr": -1,
+            "ks_list": "3,5,7",
+            "expand_list": "4,6",
+            "depth_list": "2,3,4",
+            "weight_quant_list": "fp32",
+            "act_quant_list": "fp32"
+        },
+        "phase2": {
+            "path": "exp/kernel_depth2kernel_depth_width/phase2",
+            "dynamic_batch_size": 4,
+            "n_epochs": 5,
+            "base_lr": 0.0075,
+            "warmup_epochs": 5,
+            "warmup_lr": -1,
+            "ks_list": "3,5,7",
+            "expand_list": "3,4,6",
+            "depth_list": "2,3,4",
+            "weight_quant_list": "fp32",
+            "act_quant_list": "fp32"
+        }
+    },
+    "bit": {
+        "phase1": {
+            "path": "exp/kernel_depth2kernel_depth_width_bit/phase1",
+            "dynamic_batch_size": 2,
+            "n_epochs": 12,
+            "base_lr": 0.0025,
+            "warmup_epochs": 0,
+            "warmup_lr": -1,
+            "num_batch_norm_update_epochs" : 12,
+            "ks_list": "3,5,7",
+            "expand_list": "3,4,6",
+            "depth_list": "2,3,4",
+            "weight_quant_list": "int8_per_channel,int6_per_channel,int4_per_channel",
+            "act_quant_list": "fp32,int8,int6"
+        },
+        "phase2": {
+            "path": "exp/kernel_depth2kernel_depth_width_bit/phase2",
+            "dynamic_batch_size": 1,
+            "n_epochs": 5,
+            "base_lr": 0.0075,
+            "warmup_epochs": 5,
+            "warmup_lr": -1,
+            "num_batch_norm_update_epochs" : 10,
+            "ks_list": "3,5,7",
+            "expand_list": "3,4,6",
+            "depth_list": "2,3,4",
+            "weight_quant_list": "fp32,int4_per_channel,SD4_per_channel",
+            "act_quant_list": "fp32,int8"
+        }
+    }
+}
