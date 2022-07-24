@@ -2,7 +2,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch
 from torch.nn.parameter import Parameter
-from int_quantization.fake_quantize import get_fake_quant
+from int_quantization.fake_quantize import get_fake_quant, LsqQuan
 from utils import get_same_padding, sub_filter_start_end, make_divisible, build_activation
 from .dynamic_op import DynamicSE
 from torch.nn.modules._functions import SyncBatchNorm as sync_batch_norm
@@ -319,29 +319,29 @@ class DynamicSeparableConvBn2dQuant(nn.Module):
             affine=True,
             track_running_stats=True
         )
-        
+        self.observer = nn.Sequential()
+
         self.weight_quant_mapping = {}
         self.weight_quant_list = []
         for wq in weight_quant_list:
-            for ks in self.kernel_size_list:
-                if wq == 'fp32':
-                    self.weight_quant_mapping[f"{wq}-{ks}"] = None
-                elif 'per_channel' in wq:
-                    self.weight_quant_mapping[f"{wq}-{ks}"] = len(self.weight_quant_list)
+            self.weight_quant_mapping[f"fp32"] = None
+            if wq != 'fp32':
+                if 'per_channel' in wq:
+                    self.weight_quant_mapping[wq] = len(self.weight_quant_list)
                     self.weight_quant_list.append(get_fake_quant(wq, max_in_channels))
                 else:
-                    self.weight_quant_mapping[f"{wq}-{ks}"] = len(self.weight_quant_list)
+                    self.weight_quant_mapping[wq] = len(self.weight_quant_list)
                     self.weight_quant_list.append(get_fake_quant(wq))
         self.weight_quant_list = nn.ModuleList(self.weight_quant_list)
         
         self.act_quant_mapping = {}
         self.act_quant_list = []
         for aq in act_quant_list:
-            if aq == 'fp32':
-                self.act_quant_mapping[aq] = None
-            else:
+            self.act_quant_mapping['fp32'] = None
+            if aq != 'fp32':
                 self.act_quant_mapping[aq] = len(self.act_quant_list)
                 self.act_quant_list.append(get_fake_quant(aq))
+                
         self.act_quant_list = nn.ModuleList(self.act_quant_list)
 
         self._ks_set = list(set(self.kernel_size_list))
@@ -363,6 +363,11 @@ class DynamicSeparableConvBn2dQuant(nn.Module):
         self.active_kernel_size = max(self.kernel_size_list)
         self.active_weight_quant = weight_quant_list[0]
         self.active_act_quant = act_quant_list[0]
+
+    def init_lsq(self):
+        for name, wquantID in self.weight_quant_mapping.items():
+            if 'lsq' in name:
+                self.weight_quant_list[wquantID].init_weight([(kernel_size, self.get_active_filter(self.max_in_channels, kernel_size).contiguous()) for kernel_size in reversed(self._ks_set)])
 
     def get_active_filter(self, in_channel, kernel_size):
         out_channel = in_channel
@@ -398,16 +403,19 @@ class DynamicSeparableConvBn2dQuant(nn.Module):
             kernel_size = self.active_kernel_size
         in_channel = x.size(1)
         filters = self.get_active_filter(in_channel, kernel_size).contiguous()
-        weight_fake_quant = self.weight_quant_list[self.weight_quant_mapping[f"{self.active_weight_quant}-{kernel_size}"]] if self.weight_quant_mapping[f"{self.active_weight_quant}-{kernel_size}"] is not None else None 
+        weight_fake_quant = self.weight_quant_list[self.weight_quant_mapping[self.active_weight_quant]] if self.weight_quant_mapping[self.active_weight_quant] is not None else None 
         act_fake_quant = self.act_quant_list[self.act_quant_mapping[self.active_act_quant]] if self.act_quant_mapping[self.active_act_quant] is not None else None 
         padding = get_same_padding(kernel_size)
+        
+        self.observer(x.detach())
+        
         # Quant Activation
         if act_fake_quant is not None:
             x = act_fake_quant(x) 
         
         assert self.bn.running_var is not None
         if weight_fake_quant is not None:
-            filters = weight_fake_quant(filters)
+            filters = weight_fake_quant(filters, kernel_size)
         conv = F.conv2d(
         	x, 
             filters, 
@@ -448,22 +456,21 @@ class DynamicConvBn2dQuant(nn.Module):
         self.weight_quant_mapping = {}
         self.weight_quant_list = []
         for wq in weight_quant_list:
-            if wq == 'fp32':
-                self.weight_quant_mapping[wq] = None
-            elif 'per_channel' in wq:
-                self.weight_quant_mapping[wq] = len(self.weight_quant_list)
-                self.weight_quant_list.append(get_fake_quant(wq, max_out_channels))
-            else:
-                self.weight_quant_mapping[wq] = len(self.weight_quant_list)
-                self.weight_quant_list.append(get_fake_quant(wq))
+            self.weight_quant_mapping['fp32'] = None
+            if wq != 'fp32':        
+                if 'per_channel' in wq:
+                    self.weight_quant_mapping[wq] = len(self.weight_quant_list)
+                    self.weight_quant_list.append(get_fake_quant(wq, max_out_channels))
+                else:
+                    self.weight_quant_mapping[wq] = len(self.weight_quant_list)
+                    self.weight_quant_list.append(get_fake_quant(wq))
         self.weight_quant_list = nn.ModuleList(self.weight_quant_list)
 
         self.act_quant_mapping = {}
         self.act_quant_list = []
         for aq in act_quant_list:
-            if aq == 'fp32':
-                self.act_quant_mapping[aq] = None
-            else:
+            self.act_quant_mapping['fp32'] = None
+            if aq != 'fp32':
                 self.act_quant_mapping[aq] = len(self.act_quant_list)
                 self.act_quant_list.append(get_fake_quant(aq))
         self.act_quant_list = nn.ModuleList(self.act_quant_list)
@@ -482,11 +489,17 @@ class DynamicConvBn2dQuant(nn.Module):
             affine=True,
             track_running_stats=True
         )
+        self.observer = nn.Sequential()
         self.track_bn_stat = track_bn_stat
         
         self.active_out_channel = self.max_out_channels
         self.active_weight_quant = weight_quant_list[0]
         self.active_act_quant = act_quant_list[0]
+
+    def init_lsq(self):
+        for name, wquantID in self.weight_quant_mapping.items():
+            if 'lsq' in name:
+                self.weight_quant_list[wquantID].init_weight([(self.kernel_size, self.conv.weight)])
 
     def get_active_filter(self, out_channel, in_channel):
         return self.conv.weight[:out_channel, :in_channel, :, :]
@@ -499,12 +512,15 @@ class DynamicConvBn2dQuant(nn.Module):
         weight_fake_quant = self.weight_quant_list[self.weight_quant_mapping[self.active_weight_quant]] if self.weight_quant_mapping[self.active_weight_quant] is not None else None
         act_fake_quant = self.act_quant_list[self.act_quant_mapping[self.active_act_quant]] if self.act_quant_mapping[self.active_act_quant] is not None else None 
         padding = get_same_padding(self.kernel_size)
+        
+        self.observer(x.detach())
+        
         if act_fake_quant is not None:
             x = act_fake_quant(x)
         
         assert self.bn.running_var is not None
         if weight_fake_quant is not None:
-            filters = weight_fake_quant(filters)
+            filters = weight_fake_quant(filters, self.kernel_size)
         conv = F.conv2d(
         	x, 
             filters, 

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from int_quantization.fake_quantize import FakeQuantize
+from int_quantization.lsq import LsqQuan
 from elastic_nn.dynamic_intrinsic import DynamicConvBn2dQuant, DynamicSeparableConvBn2dQuant
 
 __all__ = [
@@ -10,6 +11,8 @@ __all__ = [
     'is_pareto_efficient',
     'sync_bn',
     'sync_fake_quant',
+    'init_lsq',
+    'MyMinMaxObserver',
 ]
 multiply_adds = 1
 
@@ -160,8 +163,26 @@ def profile_quant(model, input_size, custom_ops=None):
         if isinstance(m, DynamicConvBn2dQuant) or isinstance(m, DynamicConvBn2dQuant):
             act_quant = m.act_quant_list[m.act_quant_mapping[m.active_act_quant]] if m.act_quant_mapping[m.active_act_quant] is not None else None
             weight_quant = m.weight_quant_list[m.weight_quant_mapping[m.active_weight_quant]] if m.weight_quant_mapping[m.active_weight_quant] is not None else None
-            activation_bit = act_quant.activation_post_process.bitwidth if act_quant is not None else 32
-            weight_bit = weight_quant.activation_post_process.bitwidth if weight_quant is not None else 32
+            if act_quant is not None:
+                if isinstance(act_quant, FakeQuantize):
+                    activation_bit = act_quant.activation_post_process.bitwidth
+                elif isinstance(act_quant, LsqQuan):
+                    activation_bit = act_quant.bitwidth
+                else:
+                    raise NotImplementedError
+            else:
+                activation_bit = 32
+            
+            if weight_quant is not None:
+                if isinstance(weight_quant, FakeQuantize):
+                    weight_bit = weight_quant.activation_post_process.bitwidth
+                elif isinstance(weight_quant, LsqQuan):
+                    weight_bit = weight_quant.bitwidth
+                else:
+                    raise NotImplementedError
+            else:
+                weight_bit = 32
+            
             total_ops += m.total_ops * activation_bit * weight_bit
             # print('bits for a and w', activation_bit, weight_bit)
             # print('flops', m.total_ops, 'flops_quant', m.total_ops / 64 * activation_bit * weight_bit)
@@ -238,4 +259,57 @@ def sync_fake_quant(mod):
             max_val /= torch.distributed.get_world_size()
             mod.activation_post_process.min_val.data.copy_(min_val.data)
             mod.activation_post_process.max_val.data.copy_(max_val.data)
+
+def init_lsq(mod):
+    if isinstance(mod, DynamicConvBn2dQuant) or isinstance(mod, DynamicSeparableConvBn2dQuant):
+        mod.init_lsq()
+
+class MyMinMaxObserver(nn.Module):
+    def __init__(self, averaging_constant=0.1):
+        super(MyMinMaxObserver, self).__init__()
+        self.averaging_constant = averaging_constant
+        self.register_buffer('min_val', torch.tensor([]))
+        self.register_buffer('max_val', torch.tensor([]))
+
+    def forward(self, x_orig):
+        x = x_orig.detach()  # avoid keeping autograd tape
+        x = x.to(self.min_val.dtype)
+        min_val = self.min_val
+        max_val = self.max_val
         
+        assert torch.isnan(min_val).sum() == 0
+        assert torch.isnan(max_val).sum() == 0
+        
+        # batch_mean = x.mean()
+        # batch_var = ((x - batch_mean) * (x - batch_mean)).mean()
+        # batch_std = torch.sqrt(batch_var)
+        # new_min = batch_mean - 3 * batch_std
+        # new_max = batch_mean + 3 * batch_std
+        new_min = torch.min(x)
+        new_max = torch.max(x)
+
+        # self.update_batch_stat(new_min, new_max)
+        if min_val.numel() == 0 or max_val.numel() == 0:
+            min_val = new_min
+            max_val = new_max
+        else:
+            min_val = min_val + self.averaging_constant * (new_min - min_val)
+            max_val = max_val + self.averaging_constant * (new_max - max_val)
+        # min_val = self.min_val_stat
+        # max_val = self.max_val_stat
+        # min_val = new_min if self.training else self.min_val_stat
+        # max_val = new_max if self.training else self.max_val_stat
+        # else:
+        #     if min_val.numel() == 0 or max_val.numel() == 0:
+        #         min_val = new_min
+        #         max_val = new_max
+        #     else:
+        #         min_val = min_val + self.averaging_constant * (new_min - min_val)
+        #         max_val = max_val + self.averaging_constant * (new_max - max_val)
+        
+        self.min_val.resize_(min_val.shape)
+        self.max_val.resize_(max_val.shape)
+        self.min_val.copy_(min_val)
+        self.max_val.copy_(max_val)
+        
+        return x_orig

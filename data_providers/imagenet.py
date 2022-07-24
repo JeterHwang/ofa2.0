@@ -242,7 +242,7 @@ class ImagenetDataProvider(DataProvider):
 
 	def build_sub_train_loader(self, n_images, batch_size, num_worker=None, num_replicas=None, rank=None):
 		# used for resetting BN running statistics
-		if self.__dict__.get('sub_train_%d' % self.active_img_size, None) is None:
+		if self.__dict__.get(f'sub_train_{self.active_img_size}_{n_images}_{batch_size}', None) is None:
 			if num_worker is None:
 				num_worker = self.train.num_workers
 
@@ -253,8 +253,13 @@ class ImagenetDataProvider(DataProvider):
 
 			new_train_dataset = self.train_dataset(
 				self.build_train_transform(image_size=self.active_img_size, print_log=False))
-			chosen_indexes = rand_indexes[:n_images]
-			
+			if isinstance(n_images, int):
+				chosen_indexes = rand_indexes[:n_images]
+			elif isinstance(n_images, float):
+				chosen_indexes = rand_indexes[:int(n_images * n_samples)]
+			else:
+				raise NotImplementedError
+
 			# Sub Sampler
 			if num_replicas is not None:
 				sub_sampler = MyDistributedSampler(new_train_dataset, num_replicas, rank, True, np.array(chosen_indexes))
@@ -269,7 +274,9 @@ class ImagenetDataProvider(DataProvider):
 				num_workers=num_worker, 
 				pin_memory=True,
 			)
-			self.__dict__['sub_train_%d' % self.active_img_size] = []
+			if n_images > 10000:
+				return sub_data_loader
+			self.__dict__[f'sub_train_{self.active_img_size}_{n_images}_{batch_size}'] = []
 			for images, labels in sub_data_loader:
-				self.__dict__['sub_train_%d' % self.active_img_size].append((images, labels))
-		return self.__dict__['sub_train_%d' % self.active_img_size]
+				self.__dict__[f'sub_train_{self.active_img_size}_{n_images}_{batch_size}'].append((images, labels))
+		return self.__dict__[f'sub_train_{self.active_img_size}_{n_images}_{batch_size}']

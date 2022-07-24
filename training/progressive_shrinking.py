@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from utils import AverageMeter, DistributedMetric, cross_entropy_loss_with_soft_target
 from utils import list_mean, subset_mean, val2list, accuracy, MyRandomResizedCrop
-from utils import set_running_statistics, profile_quant
+from utils import set_running_statistics, profile_quant, init_lsq, set_activation, train_activation
 from utils import disable_bn_stats, enable_bn_stats, sync_bn, sync_fake_quant
 from int_quantization.fake_quantize import disable_observer, enable_observer
 
@@ -121,7 +121,7 @@ def validate_all_settings(
 	subnet_settings = []
 	for qw in weight_quant_list:
 		for qa in act_quant_list:
-			for d in [min(depth_list)]:
+			for d in depth_list:
 				for e in expand_ratio_list:
 					for k in ks_list:
 						for w in [max(width_mult_list)]:
@@ -437,7 +437,9 @@ def train(
 			epoch = epoch,
 			is_test = True
 		)
-		
+		for name, mod in dynamic_net.named_parameters():
+			if 'matrix' in name:
+				print(name, mod.data)
 		if (epoch + 1) % args.validation_frequency == 0:
 			val_loss, val_acc, val_acc5, _val_log = validate_func(
 				dynamic_net,
@@ -489,6 +491,7 @@ def load_pretrained_layer(model, model_path=None):
 				new_dict[key.replace('point_linear.bn', 'point_linear.conv')] = value
 	model_dict.update(new_dict)
 	model.load_state_dict(model_dict)
+	model.apply(init_lsq)
 
 def train_elastic_depth(
 	dynamic_net,
@@ -635,11 +638,14 @@ def train_elastic_bit(
 	validate_func_dict
 ):
 	
-	validate_func_dict['weight_quant_list'] = ['int8_per_channel', 'int4_per_channel']
-	validate_func_dict['act_quant_list'] = ['fp32', 'int6']
+	validate_func_dict['weight_quant_list'] = ['lsq4_per_channel']
+	validate_func_dict['act_quant_list'] = ['lsq4_per_tensor']
 	
 	if not args.resume:
 		load_pretrained_layer(dynamic_net.module, model_path=args.ofa_checkpoint_path)
+		# observe_activation(dynamic_net, run_config=run_config, args=args)
+		# train_initialize(dynamic_net.module, run_config=run_config, args=args)
+		torch.distributed.barrier()
 		print('%.3f\t%.3f\t%.3f\t%s' %validate_all_settings(
 			dynamic_net,
 			device,
@@ -862,3 +868,24 @@ def reset_running_statistics(
 	
 	set_running_statistics(net, data_loader, distributed) ## FIX ME !!!
 
+def observe_activation(dynamic_net, run_config, args):
+	run_config.data_provider.assign_active_img_size(224)
+	data_loader = run_config.random_sub_train_loader(
+		2000, 
+		200, 
+		num_replicas=None, 
+		rank=None
+	)
+	set_activation(dynamic_net, data_loader, False)
+
+def train_initialize(model, run_config, args):
+	run_config.data_provider.assign_active_img_size(224)
+	data_loader = run_config.random_sub_train_loader(
+		20000, 
+		176, 
+		# num_replicas=len(args.gpus.split(',')), 
+		# rank=torch.distributed.get_rank(),
+		num_replicas=None, 
+		rank=None
+	)
+	train_activation(model, data_loader, False)

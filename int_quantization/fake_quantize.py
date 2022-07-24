@@ -3,6 +3,7 @@ import torch
 from torch.nn import Module
 from .observer import MovingAverageMinMaxObserver, HistogramObserver, MovingAveragePerChannelMinMaxObserver, PercentileObserver, _with_args
 from .quant import Log_Preprocess_cpu, Log_Preprocess_gpu
+from .lsq import LsqQuan
 # import torch.quantization.fake_quantize
 class FakeQuantize(Module):
     r""" Simulate the quantize and dequantize operations in training time.
@@ -225,7 +226,7 @@ quant_mapping = {
     'int8' : default_int8_fake_quant,
     'int6' : default_int6_fake_quant,
     'int4' : default_int4_fake_quant,
-    'SD4' : default_log4_fake_quant
+    'SD4' : default_log4_fake_quant,
 }
 
 def disable_fake_quant(mod):
@@ -292,6 +293,16 @@ def get_fake_quant(fake_quant_type, max_channel=None):
     assert fake_quant_type is not None
     if fake_quant_type in quant_mapping:
         return quant_mapping[fake_quant_type]()
+    elif fake_quant_type =='lsq4_per_tensor' : 
+        return LsqQuan(4, True, False, False)
+    elif fake_quant_type =='lsq5_per_tensor' : 
+        return LsqQuan(5, True, False, False)
+    elif fake_quant_type =='lsq6_per_tensor' : 
+        return LsqQuan(6, True, False, False)
+    elif fake_quant_type =='lsq8_per_tensor' : 
+        return LsqQuan(8, True, False, False)
+    elif fake_quant_type == 'lsq4_per_channel' :
+        return LsqQuan(4, False, True, True)
     elif max_channel is not None:
         if fake_quant_type == 'int4_per_channel':
             return FakeQuantize.with_args(observer=MovingAveragePerChannelMinMaxObserver, quant_min=-7, quant_max=7, 
@@ -320,4 +331,4 @@ def get_fake_quant(fake_quant_type, max_channel=None):
         else:
             raise NotImplementedError
     else:
-        return NotImplementedError
+        raise NotImplementedError

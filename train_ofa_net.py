@@ -38,8 +38,8 @@ def parse_args() -> Namespace:
     parser.add_argument('--manual_seed', type=int, default=0)
 
     parser.add_argument('--lr_schedule_type', type=str, default='cosine')
-    parser.add_argument('--base_batch_size', type=int, default=64)
-    parser.add_argument('--train_size', type=float, default=0.1)
+    parser.add_argument('--base_batch_size', type=int, default=48)
+    parser.add_argument('--train_size', type=float, default=0.5)
     parser.add_argument('--valid_size', type=float, default=0.05)
 
     parser.add_argument('--opt_type', type=str, default='sgd')
@@ -51,7 +51,7 @@ def parse_args() -> Namespace:
     parser.add_argument('--fp16_allreduce', type=bool, default=False)
 
     parser.add_argument('--model_init', type=str, default='he_fout')
-    parser.add_argument('--validation_frequency', type=int, default=4)
+    parser.add_argument('--validation_frequency', type=int, default=1)
     parser.add_argument('--print_frequency', type=int, default=10)
 
     parser.add_argument('--n_worker', type=int, default=8)
@@ -74,7 +74,7 @@ def parse_args() -> Namespace:
     parser.add_argument('--kd_type', type=str, default='ce')
 
     parser.add_argument('--hyperparameter_path', type=Path, default='./')
-    parser.add_argument("--gpus", type=str, help="gpu devices id", default="0,2,3")
+    parser.add_argument("--gpus", type=str, help="gpu devices id", default="0,1,2")
     
     parser.add_argument('--save_path', type=Path, default='/home/ntu329/Documents/Datasets/ImageNet')
     parser.add_argument('--model_fname', type=str, default=None)
