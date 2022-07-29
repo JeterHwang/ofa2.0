@@ -73,17 +73,17 @@
     "bit": {
         "phase1": {
             "path": "exp/kernel_depth2kernel_depth_width_bit/phase1",
-            "dynamic_batch_size": 2,
-            "n_epochs": 8,
+            "dynamic_batch_size": 1,
+            "n_epochs": 10,
             "base_lr": 0.005,
             "warmup_epochs": 0,
             "warmup_lr": -1,
             "num_batch_norm_update_epochs" : 12,
             "ks_list": "3,5,7",
-            "expand_list": "6",
+            "expand_list": "3,4,6",
             "depth_list": "2,3,4",
-            "weight_quant_list": "lsq4_per_channel",
-            "act_quant_list": "lsq4_per_tensor"
+            "weight_quant_list": "lsq4_per_channel,lsq3_per_channel",
+            "act_quant_list": "lsq5_per_tensor,lsq4_per_tensor"
         },
         "phase2": {
             "path": "exp/kernel_depth2kernel_depth_width_bit/phase2",

@@ -121,9 +121,9 @@ def validate_all_settings(
 	subnet_settings = []
 	for qw in weight_quant_list:
 		for qa in act_quant_list:
-			for d in depth_list:
-				for e in expand_ratio_list:
-					for k in ks_list:
+			for d in [max(depth_list)]:
+				for e in [max(expand_ratio_list)]:
+					for k in [max(ks_list)]:
 						for w in [max(width_mult_list)]:
 							for img_size in [max(image_size_list)]:
 								subnet_settings.append([{
@@ -243,7 +243,7 @@ def train_one_epoch(
 	last            = 100
 	data_time 	    = AverageMeter()
 	losses 		    = DistributedMetric("train_loss", args.world_size) if distributed else AverageMeter()
-	subnet_settings = [dynamic_net.module.min_subnet for _ in range(args.dynamic_batch_size)]
+	subnet_settings = [dynamic_net.module.sample_active_subnet() for _ in range(args.dynamic_batch_size)]
 	subnet_strs     = [get_module_str(dynamic_net, setting) for setting in subnet_settings]
 	acc1_of_subnets = [AverageMeter() if not distributed else DistributedMetric("Subnet ACC", args.world_size) for _ in range(len(subnet_settings))]
 	result          = {}		 
@@ -437,9 +437,9 @@ def train(
 			epoch = epoch,
 			is_test = True
 		)
-		for name, mod in dynamic_net.named_parameters():
-			if 'matrix' in name:
-				print(name, mod.data)
+		# for name, mod in dynamic_net.named_parameters():
+		# 	if 'coefficient' in name and torch.distributed.get_rank() == 0:
+		# 		print(name, mod.data.squeeze())
 		if (epoch + 1) % args.validation_frequency == 0:
 			val_loss, val_acc, val_acc5, _val_log = validate_func(
 				dynamic_net,
@@ -638,8 +638,8 @@ def train_elastic_bit(
 	validate_func_dict
 ):
 	
-	validate_func_dict['weight_quant_list'] = ['lsq4_per_channel']
-	validate_func_dict['act_quant_list'] = ['lsq4_per_tensor']
+	validate_func_dict['weight_quant_list'] = ['lsq3_per_channel', 'lsq4_per_channel']
+	validate_func_dict['act_quant_list'] = ['lsq4_per_tensor', 'lsq5_per_tensor']
 	
 	if not args.resume:
 		load_pretrained_layer(dynamic_net.module, model_path=args.ofa_checkpoint_path)

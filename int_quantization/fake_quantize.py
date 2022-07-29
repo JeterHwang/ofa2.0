@@ -301,6 +301,8 @@ def get_fake_quant(fake_quant_type, max_channel=None):
         return LsqQuan(6, True, False, False)
     elif fake_quant_type =='lsq8_per_tensor' : 
         return LsqQuan(8, True, False, False)
+    elif fake_quant_type == 'lsq3_per_channel' :
+        return LsqQuan(3, False, True, True)
     elif fake_quant_type == 'lsq4_per_channel' :
         return LsqQuan(4, False, True, True)
     elif max_channel is not None:
