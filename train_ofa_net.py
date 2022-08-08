@@ -76,8 +76,10 @@ def parse_args() -> Namespace:
     parser.add_argument('--hyperparameter_path', type=Path, default='./')
     parser.add_argument("--gpus", type=str, help="gpu devices id", default="0,1,2")
     
-    parser.add_argument('--save_path', type=Path, default='/home/ntu329/Documents/Datasets/ImageNet')
-    parser.add_argument('--model_fname', type=str, default=None)
+    parser.add_argument('--dataset_path', type=Path, default='/home/ntu329/Documents/Datasets/ImageNet')
+    parser.add_argument('--save_path', type=Path, default='/home/ntu329/jeter/AutoML/cifar10_classification/ckpt/32-4-3')
+    parser.add_argument('--ckpt_path', type=Path, default='/home/ntu329/jeter/AutoML/cifar10_classification/ckpt')
+    parser.add_argument('--model_fname', type=str, default='Epoch-2.pt')
     parser.add_argument('--backend', type=str, default='nccl')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
     # parser.add_argument('--epochs',)
@@ -189,7 +191,7 @@ def distributed_training(gpu, args):
         distort_color           = args.distort_color, 
         image_size              = args.image_size, 
         num_replicas            = args.world_size, 
-        save_path               = args.save_path,  
+        save_path               = args.dataset_path,  
         rank                    = rank
     )
     ################## Model ####################
@@ -202,8 +204,8 @@ def distributed_training(gpu, args):
         ks_list             = args.ks_list, 
         expand_ratio_list   = args.expand_list, 
         depth_list          = args.depth_list,
-        weight_quant_list   = args.weight_quant_list,
-		act_quant_list		= args.act_quant_list,
+        weight_quant_list   = ['fp32', 'lsq4_per_channel', 'lsq3_per_channel'],
+		act_quant_list		= ['fp32', 'lsq4_per_tensor', 'lsq3_per_tensor'],
     ).cuda()
 
     init_models(net, args.model_init)
@@ -239,7 +241,7 @@ def distributed_training(gpu, args):
         
     # test criterion
     test_criterion = nn.CrossEntropyLoss()
-################### Optimizer ###############
+    ################### Optimizer ###############
     if args.no_decay_keys:
         keys = args.no_decay_keys.split('#')
         net_params = [
@@ -306,7 +308,8 @@ def distributed_training(gpu, args):
                 "https://hanlab.mit.edu/files/OnceForAll/ofa_nets/ofa_mbv3_d234_e346_k357_w1.0",
                 model_dir='.torch/ofa_checkpoints/%d' % 0
             )
-
+        else:
+            args.ofa_checkpoint_path = args.ckpt_path / args.model_fname
     # Distributed dataparalllel
     net = nn.parallel.DistributedDataParallel(net, device_ids=[gpu], find_unused_parameters=True)
     if rank == 0:
@@ -371,6 +374,8 @@ def distributed_training(gpu, args):
 
 def main(args):
     args = add_args(args)
+    
+    args.save_path.mkdir(parents=True, exist_ok=True)
     os.makedirs(args.path, exist_ok=True)
 
     os.environ["CUDA_DEVICE_ORDER"]     = "PCI_BUS_ID"

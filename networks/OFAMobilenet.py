@@ -220,8 +220,13 @@ class OFAMobileNetV3(MobileNetV3):
 		for key in state_dict:
 			if '.mobile_inverted_conv.' in key:
 				new_key = key.replace('.mobile_inverted_conv.', '.conv.')
+			elif 'module.' in key:
+				new_key = key.replace('module.', '')
 			else:
 				new_key = key
+			if 'min_val' in new_key or 'max_val' in new_key:
+				continue	
+			
 			if new_key in model_dict:
 				pass
 			elif '.bn.bn.' in new_key:

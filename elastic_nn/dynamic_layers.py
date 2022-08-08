@@ -2,9 +2,11 @@
 # Han Cai, Chuang Gan, Tianzhe Wang, Zhekai Zhang, Song Han
 # International Conference on Learning Representations (ICLR), 2020.
 import copy
+from responses import target
 import torch
 import torch.nn as nn
 from collections import OrderedDict
+from int_quantization.lsq.lsq import LsqQuan
 
 from utils.layers import MBConvLayer, ConvLayer, IdentityLayer, set_layer_from_config
 from utils.layers import ResNetBottleneckBlock, LinearLayer
@@ -44,17 +46,20 @@ def copy_bn(target_bn, ofa_bn):
         target_bn.running_mean.data.copy_(ofa_bn.running_mean.data[:feature_dim])
         target_bn.running_var.data.copy_(ofa_bn.running_var.data[:feature_dim])
 
-def copy_fake_quant(target_fq, ofa_fq):
-    assert isinstance(target_fq, FakeQuantize) and isinstance(ofa_fq, FakeQuantize) 
-    out_channel = target_fq.max_channel
-    target_fq.scale.copy_(ofa_fq.scale)
-    target_fq.zero_point.copy_(ofa_fq.zero_point)
-    if hasattr(target_fq.activation_post_process, 'min_vals'):
-        target_fq.activation_post_process.min_vals.copy_(ofa_fq.activation_post_process.min_vals[:out_channel])
-        target_fq.activation_post_process.max_vals.copy_(ofa_fq.activation_post_process.max_vals[:out_channel])
+def copy_fake_quant(target_fq, ofa_fq, kernel_size=None, channel_size=None):
+    if isinstance(target_fq, FakeQuantize) and isinstance(ofa_fq, FakeQuantize):
+        target_fq.scale.copy_(ofa_fq.scale)
+        target_fq.zero_point.copy_(ofa_fq.zero_point)
+    elif isinstance(target_fq, LsqQuan):
+        assert not ofa_fq.training
+        ofa_scale = ofa_fq.get_active_scale(kernel_size, channel_size)
+        target_fq.scale.data.resize_(ofa_scale.data.shape)
+        target_fq.scale.data.copy_(ofa_scale.data)
+        ofa_offset = ofa_fq.get_active_offset()
+        target_fq.offset.data.resize_(ofa_offset.data.shape)
+        target_fq.offset.data.copy_(ofa_offset.data)
     else:
-        target_fq.activation_post_process.min_vals.copy_(ofa_fq.activation_post_process.min_val)
-        target_fq.activation_post_process.max_vals.copy_(ofa_fq.activation_post_process.max_val)
+        return
 
 class DynamicLinearLayer(nn.Module):
 
@@ -826,7 +831,8 @@ class DynamicMBConvLayerQuant(MyModule):
             copy_bn(sub_layer.inverted_bottleneck.bn, self.inverted_bottleneck.conv.bn)
             copy_fake_quant(
                 sub_layer.inverted_bottleneck.weight_fake_quant,
-                self.inverted_bottleneck.conv.weight_quant_list[sub_layer.inverted_bottleneck.weight_quant_type]
+                self.inverted_bottleneck.conv.weight_quant_list[sub_layer.inverted_bottleneck.weight_quant_type],
+                channel_size=middle_channel
             )
             copy_fake_quant(
                 sub_layer.inverted_bottleneck.act_fake_quant,
@@ -839,7 +845,9 @@ class DynamicMBConvLayerQuant(MyModule):
         copy_bn(sub_layer.depth_conv.bn, self.depth_conv.bn.bn)
         copy_fake_quant(
             sub_layer.depth_conv.weight_fake_quant,
-            self.depth_conv.weight_quant_list[sub_layer.depth_conv.weight_quant_type]
+            self.depth_conv.weight_quant_list[sub_layer.depth_conv.weight_quant_type],
+            kernel_size=self.active_kernel_size,
+            channel_size=middle_channel
         )
         copy_fake_quant(
             sub_layer.depth_conv.act_fake_quant,
@@ -868,7 +876,8 @@ class DynamicMBConvLayerQuant(MyModule):
         copy_bn(sub_layer.point_linear.bn, self.point_linear.bn.bn)
         copy_fake_quant(
             sub_layer.point_linear.weight_fake_quant,
-            self.point_linear.weight_quant_list[sub_layer.point_linear.weight_quant_type]
+            self.point_linear.weight_quant_list[sub_layer.point_linear.weight_quant_type],
+            channel_size=self.active_out_channel
         )
         copy_fake_quant(
             sub_layer.point_linear.act_fake_quant,
@@ -893,6 +902,7 @@ class DynamicMBConvLayerQuant(MyModule):
             'sep_act_quant': self.active_sep_aquant 
         }
 
+    ## ONLY USED IN ELASTIC WIDTH INITIALIZE ##
     def re_organize_middle_weights(self, expand_ratio_stage=0):
         importance = torch.sum(torch.abs(self.point_linear.conv.conv.weight.data), dim=(0, 2, 3))
         if isinstance(self.depth_conv.conv.bn, DynamicGroupNorm):

@@ -24,17 +24,35 @@ def bn_forward(x, bn: nn.BatchNorm2d, feature_dim):
                 exponential_average_factor = 1.0 / float(bn.num_batches_tracked)
             else:  # use exponential moving average
                 exponential_average_factor = bn.momentum
+    need_sync = bn.training
+    if need_sync:
+        process_group = torch.distributed.group.WORLD
+        world_size = torch.distributed.get_world_size(process_group)
+        need_sync = world_size > 1
     
-    return F.batch_norm(
-        x, 
-        bn.running_mean[:feature_dim], 
-        bn.running_var[:feature_dim], 
-        bn.weight[:feature_dim],
-        bn.bias[:feature_dim], 
-        training=bn.training,
-        momentum=exponential_average_factor, 
-        eps=bn.eps,
-    )
+    if not need_sync:
+        return F.batch_norm(
+            x, 
+            bn.running_mean[:feature_dim], 
+            bn.running_var[:feature_dim], 
+            bn.weight[:feature_dim],
+            bn.bias[:feature_dim], 
+            training=bn.training,
+            momentum=exponential_average_factor, 
+            eps=bn.eps,
+        )
+    else:
+        return sync_batch_norm.apply(
+            x,
+            bn.weight[:feature_dim],
+            bn.bias[:feature_dim], 
+            bn.running_mean[:feature_dim], 
+            bn.running_var[:feature_dim], 
+            bn.eps,
+            exponential_average_factor,
+            process_group,
+            world_size,
+        )
 
 class DynamicSepConvBn2DNonFused(nn.Module):
     KERNEL_TRANSFORM_MODE = 1  # None or 1

@@ -23,7 +23,8 @@ from int_quantization.fake_quantize import disable_observer, enable_observer
 __all__ = [
 	'validate', 
 	'validate_all_settings',
-    'train_one_epoch', 
+    'validate_one_setting',
+	'train_one_epoch', 
     'train', 
     'load_pretrained_model',
 	'load_model',
@@ -31,6 +32,9 @@ __all__ = [
     'train_elastic_expand', 
     'train_elastic_width_mult',
 	'train_elastic_bit',
+	'save_model',
+	'load_model',
+	'get_cost',
 ]
 ## CALLED BY VALIDATE_ALL_SETTINGS
 def validate(
@@ -214,8 +218,7 @@ def validate_one_setting(
 		run_str	= "Validate No.1 Subnet", 
 	)
 	dynamic_net.apply(enable_observer)
-	if torch.distributed.get_rank() == 0:
-		print(f"===== No.1 validation accuracy({top1}) =====")
+	return top1
 
 def train_one_epoch(
 	dynamic_net, 
@@ -244,9 +247,7 @@ def train_one_epoch(
 	data_time 	    = AverageMeter()
 	losses 		    = DistributedMetric("train_loss", args.world_size) if distributed else AverageMeter()
 	subnet_settings = [dynamic_net.module.sample_active_subnet() for _ in range(args.dynamic_batch_size)]
-	subnet_strs     = [get_module_str(dynamic_net, setting) for setting in subnet_settings]
-	acc1_of_subnets = [AverageMeter() if not distributed else DistributedMetric("Subnet ACC", args.world_size) for _ in range(len(subnet_settings))]
-	result          = {}		 
+	 
 	# Top1, Top5
 	metric_dict     = get_metric_dict(args.world_size)
 
@@ -302,7 +303,6 @@ def train_one_epoch(
 					loss.backward()
 
 				acc1, acc5 = update_metric(metric_dict, output, target)
-				acc1_of_subnets[setting_id].update(acc1)
 			
 			losses.update(list_mean(loss_of_subnets), torch.tensor(images.size(0), device=images.device))
 			
@@ -310,27 +310,12 @@ def train_one_epoch(
 				nn.utils.clip_grad_norm_(dynamic_net.parameters(), max_norm=10.0, norm_type=2)
 				optimizer.step()
 				optimizer.zero_grad()
-				# Update subnet result
-				for setting, module_str, top_1_metric in zip(subnet_settings, subnet_strs, acc1_of_subnets):
-					# dynamic_net.module.set_active_subnet(**setting)
-					top_1 = top_1_metric.avg.item()
-					top_1_metric.reset()
-					result.update({module_str : (top_1, setting)})	
-					if top_1 > first:
-						first = top_1
-					if top_1 < last:
-						last = top_1
 				# Sample subnets
 				subnet_seed = int('%d%.3d%.3d' % (epoch * nBatch + i, 1, 0))
 				random.seed(subnet_seed)
-				subnet_settings, subnet_strs = [], []
+				subnet_settings = []
 				for _ in range(args.dynamic_batch_size):
 					subnet_settings.append(dynamic_net.module.sample_active_subnet())
-					subnet_strs.append(get_module_str(dynamic_net))
-				# for _ in range(args.dynamic_batch_size // 2, args.dynamic_batch_size):
-				# 	selected_subnet_setting = random.choice(subnet_pool)
-				# 	subnet_settings.append(selected_subnet_setting)
-				# 	subnet_strs.append(get_module_str(dynamic_net, selected_subnet_setting))
 				# Adjust 
 				if epoch < warmup_epochs:
 					new_lr = run_config.warmup_adjust_learning_rate(
@@ -363,7 +348,7 @@ def train_one_epoch(
 			t.update(1)
 			end = time.time()
 	
-	return losses.avg.item(), get_metric_vals(metric_dict), sorted(list(result.values()), key=lambda x : x[0])
+	return losses.avg.item(), get_metric_vals(metric_dict)
 
 def train(
 	dynamic_net, 
@@ -386,7 +371,7 @@ def train(
 	for epoch in range(args.start_epoch, args.n_epochs + args.warmup_epochs):
 		# if (epoch + 1) > args.num_batch_norm_update_epochs:
 		# 	dynamic_net.apply(disable_bn_stats)
-		train_loss, (train_top1, train_top5), acc_result = train_one_epoch(
+		train_loss, (train_top1, train_top5) = train_one_epoch(
 			dynamic_net, 
 			device,
 			train_criterion,
@@ -398,45 +383,29 @@ def train(
 			args.warmup_lr,
 			subnet_pool
 		)
-		if torch.distributed.get_rank() == 0:
-			print(f"Total {len(acc_result)} of subnets !!")
-		subnet_pool = [res[1] for res in acc_result[:500]]
-		dynamic_net.apply(sync_bn)
-		dynamic_net.apply(sync_fake_quant)
-		# cur_min = 0
-		# for _ in range(1):
-		# 	min_acc, min_setting = 100, {}
-		# 	for res in acc_result:
-		# 		if min_acc > res[0] and res[0] >= cur_min:
-		# 			min_acc = res[0]
-		# 			min_setting = res[1]
-		# 	subnet_pool.append(min_setting)
-		# 	cur_min = min_acc
-		# subnet_pool = [acc_result[res[0]][1] for res in result_sorted[:50]]
-		
-		# if distributed and torch.distributed.get_rank() == 0:
-		# 	bitOps_w, params_w = get_cost(dynamic_net, 224, acc_result[0][1])
-		# 	print(f"===== Worst training accuracy({acc_result[0][0]}) =====")
-		# 	print(f"Bitops = {bitOps_w} (G)")
-		# 	print(f"Param size = {params_w} (MB)")
-		# torch.distributed.barrier()
-		bitOps_w, params_w = get_cost(dynamic_net, 224, acc_result[-1][1])
-		if distributed and torch.distributed.get_rank() == 0:
-			print(f"===== Best training accuracy({acc_result[-1][0]}) =====")
-			print(f"Bitops = {bitOps_w} (G)")
-			print(f"Param size = {params_w} (MB)")
+		#dynamic_net.apply(sync_bn)
+		#dynamic_net.apply(sync_fake_quant)
+
+		random_subnet = dynamic_net.module.sample_active_subnet()
+		bitOps_w, params_w = get_cost(dynamic_net, 224, random_subnet)
 		torch.distributed.barrier()
-		validate_one_setting(
+		top1 = validate_one_setting(
 			dynamic_net, 
 			test_criterion,
 			run_config,
 			args,
-			acc_result[-1][1],
+			random_subnet,
 			subnet_str = "",
 			image_size = 224,
 			epoch = epoch,
 			is_test = True
 		)
+		if distributed and torch.distributed.get_rank() == 0:
+			print(f"===== Random Subnet accuracy({top1}) =====")
+			print(f"Bitops = {bitOps_w} (G)")
+			print(f"Param size = {params_w} (MB)")
+			print(f"===================================================")
+		
 		# for name, mod in dynamic_net.named_parameters():
 		# 	if 'coefficient' in name and torch.distributed.get_rank() == 0:
 		# 		print(name, mod.data.squeeze())
@@ -448,7 +417,7 @@ def train(
 				run_config,
 				args,
 				epoch=epoch, 
-				is_test=True, ## changed !!
+				is_test=True,
 			)
 			# best_acc
 			is_best = val_acc > best_acc
@@ -456,10 +425,11 @@ def train(
 			
 			if not distributed or torch.distributed.get_rank() == 0:
 				save_model(
-					args.save_path,
+					args.ckpt_path,
 					dynamic_net,
 					optimizer,
 					run_config,
+					epoch,
 					best_acc,
 					is_best=is_best
 				)
@@ -468,10 +438,15 @@ def train(
 ## LOAD MODEL AND PRINT THE MESSAGE
 def load_pretrained_model(model, model_path=None):
 	# specify init path
-	# print('----- Start Loading Pretrained Model -----')
+	print('----- Start Loading Pretrained Model -----')
 	init = torch.load(model_path, map_location='cpu')['state_dict']
+	# for key in init:
+	# 	print(key)
+	# print('========================================================')
+	# for name, val in model.named_parameters():
+	# 	print(name)
 	model.load_state_dict(init)
-	# print('----- Finish Load Pretrained Model -----')
+	print('----- Finish Load Pretrained Model -----')
 
 def load_pretrained_layer(model, model_path=None):
 	pretrained_dict = torch.load(model_path, map_location='cpu')['state_dict']
@@ -639,7 +614,7 @@ def train_elastic_bit(
 ):
 	
 	validate_func_dict['weight_quant_list'] = ['lsq3_per_channel', 'lsq4_per_channel']
-	validate_func_dict['act_quant_list'] = ['lsq4_per_tensor', 'lsq5_per_tensor']
+	validate_func_dict['act_quant_list'] = ['lsq3_per_tensor', 'lsq4_per_tensor']
 	
 	if not args.resume:
 		load_pretrained_layer(dynamic_net.module, model_path=args.ofa_checkpoint_path)
@@ -657,7 +632,7 @@ def train_elastic_bit(
 		'valid')
 	else:
 		load_model(
-			args.save_path,
+			args.ckpt_path,
 			dynamic_net,
 			optimizer,
 			args,
@@ -788,34 +763,43 @@ def load_model(
 	args,
 	model_fname=None
 ):
-    latest_fname = os.path.join(save_path, 'latest.txt')
-    if model_fname is None and os.path.exists(latest_fname):
-        with open(latest_fname, 'r') as fin:
-            model_fname = fin.readline()
-            if model_fname[-1] == '\n':
-                model_fname = model_fname[:-1]
+    # latest_fname = os.path.join(save_path, 'latest.txt')
+    # if model_fname is None and os.path.exists(latest_fname):
+    #     with open(latest_fname, 'r') as fin:
+    #         model_fname = fin.readline()
+    #         if model_fname[-1] == '\n':
+    #             model_fname = model_fname[:-1]
     # noinspection PyBroadException
-    try:
-        if model_fname is None or not os.path.exists(model_fname):
-            model_fname = '%s/checkpoint.pth.tar' % save_path
-            with open(latest_fname, 'w') as fout:
-                fout.write(model_fname + '\n')
-        print("=> loading checkpoint '{}'".format(model_fname))
-        checkpoint = torch.load(model_fname, map_location='cpu')
-    except Exception:
-        print('fail to load checkpoint from %s' % save_path)
-        return {}
+	try:
+		# if model_fname is None or not os.path.exists(model_fname):
+		#     model_fname = '%s/checkpoint.pth.tar' % save_path
+		#     with open(latest_fname, 'w') as fout:
+		#         fout.write(model_fname + '\n')
+		print("=> loading checkpoint '{}'".format(model_fname))
+		checkpoint = torch.load(save_path / model_fname, map_location='cpu')
+	except Exception:
+		print('fail to load checkpoint from %s' % save_path)
+		return {}
 
-    model.load_state_dict(checkpoint['state_dict'])
-    if 'epoch' in checkpoint:
-        args.start_epoch = checkpoint['epoch'] + 1
-    if 'best_acc' in checkpoint:
-        args.best_acc = checkpoint['best_acc']
-    if 'optimizer' in checkpoint:
-        optimizer.load_state_dict(checkpoint['optimizer'])
+	model.apply(init_lsq)
+	state_dict = checkpoint['state_dict']
+	model_dict = model.state_dict()
+	for key in state_dict:
+		if 'min_val' in key or 'max_val' in key:
+			continue
+		else:
+			model_dict[key] = state_dict[key]
+	model.load_state_dict(model_dict)
+	
+	if 'epoch' in checkpoint:
+		args.start_epoch = checkpoint['epoch'] + 1
+	if 'best_acc' in checkpoint:
+		args.best_acc = checkpoint['best_acc']
+	if 'optimizer' in checkpoint:
+		optimizer.load_state_dict(checkpoint['optimizer'])
 
-    print("=> loaded checkpoint '{}'".format(model_fname))
-    return checkpoint
+	print("=> loaded checkpoint '{}'".format(model_fname))
+	return checkpoint
 
 
 def save_model(
@@ -823,6 +807,7 @@ def save_model(
 	net,
 	optimizer,
 	run_config,
+	epoch,
 	best_acc	= None,
 	checkpoint	= None, 
 	is_best		= False, 
@@ -831,22 +816,21 @@ def save_model(
 	if checkpoint is None:
 		checkpoint = {'state_dict': net.state_dict()}
 	if model_name is None:
-		model_name = 'checkpoint.pth.tar'
+		model_name = f"Epoch-{epoch}.pt"
 
 	# add `dataset` info to the checkpoint
 	checkpoint['dataset'] 	= run_config.dataset  
-	checkpoint['optimizer'] = optimizer
+	checkpoint['epoch']     = epoch
+	checkpoint['optimizer'] = optimizer.state_dict()
 	checkpoint['best_acc'] 	= best_acc
 	
-	latest_fname 	= os.path.join(save_path, 'latest.txt')
-	model_path 		= os.path.join(save_path, model_name)
-	with open(latest_fname, 'w') as fout:
-		fout.write(model_path + '\n')
+	model_path = save_path / model_name
+	with open(save_path / 'latest.txt', 'w') as fout:
+		fout.write(str(model_path.absolute().resolve()) + '\n')
 	torch.save(checkpoint, model_path)
 
 	if is_best:
-		best_path = os.path.join(save_path, 'model_best.pth.tar')
-		torch.save({'state_dict': checkpoint['state_dict']}, best_path)
+		torch.save({'state_dict': checkpoint['state_dict']}, save_path / 'model_best.pt')
 
 def reset_running_statistics(
 	net,

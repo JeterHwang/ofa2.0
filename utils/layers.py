@@ -722,8 +722,8 @@ class ConvBn2DQuant(nn.Module):
 		bias=False, 
 		use_se=False,
 		act_func='relu',
-        weight_fake_quant='SD4_per_channel',
-        act_fake_quant = 'int8',
+        weight_fake_quant='lsq4_per_channel',
+        act_fake_quant = 'lsq4_per_tensor',
 	):
 		# default normal 3x3_Conv with bn and relu
 		self.in_channels = in_channels
@@ -743,10 +743,10 @@ class ConvBn2DQuant(nn.Module):
 		if weight_fake_quant == 'fp32':
 			self.weight_fake_quant = None
 		elif 'per_channel' in weight_fake_quant:
-			self.weight_fake_quant = get_fake_quant(weight_fake_quant, out_channels)
+			self.weight_fake_quant = get_fake_quant(weight_fake_quant, out_channels, dynamic=False)
 		else:
-			self.weight_fake_quant = get_fake_quant(weight_fake_quant)
-		self.act_fake_quant = None if act_fake_quant == 'fp32' else get_fake_quant(act_fake_quant)
+			self.weight_fake_quant = get_fake_quant(weight_fake_quant, dynamic=False)
+		self.act_fake_quant = None if act_fake_quant == 'fp32' else get_fake_quant(act_fake_quant, dynamic=False)
 		
 		self.conv = nn.Conv2d(
 			in_channels, 
@@ -764,23 +764,21 @@ class ConvBn2DQuant(nn.Module):
 		self.se = SEModule(out_channels) if self.use_se else None
 		
 	def forward(self, x):
-		out_channel = x.size(1)
-		w_conv = self.conv.weight.view(out_channel, -1)
-		w_bn = torch.diag(self.bn.weight / torch.sqrt(self.bn.running_var))
-		conv_weight = torch.mm(w_bn, w_conv).view(self.conv.weight.size())
-		conv_weight = self.weight_fake_quant(conv_weight) if self.weight_fake_quant is not None else conv_weight
-		conv_bias = self.bn.bias - self.bn.weight * self.bn.running_mean / torch.sqrt(self.bn.running_var)
-		output = F.conv2d(
+		filters = self.conv.weight
+		if self.weight_fake_quant is not None:
+			filters = self.weight_fake_quant(filters)
+		if self.act_fake_quant is not None:
+			x = self.act_fake_quant(x)
+		x = F.conv2d(
         	x, 
-            conv_weight, 
-            conv_bias, 
+            filters, 
+            self.conv.bias, 
             self.stride, 
             self.padding, 
 			self.dilation,
 			self.groups
         )
-		if self.act_fake_quant is not None:
-			output = self.act_fake_quant(output)
+		output = self.bn(x)
 		if self.act is not None:
 			output = self.act(output)
 		if self.se is not None:

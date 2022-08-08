@@ -82,8 +82,8 @@
             "ks_list": "3,5,7",
             "expand_list": "3,4,6",
             "depth_list": "2,3,4",
-            "weight_quant_list": "lsq4_per_channel,lsq3_per_channel",
-            "act_quant_list": "lsq5_per_tensor,lsq4_per_tensor"
+            "weight_quant_list": "fp32,lsq4_per_channel,lsq3_per_channel",
+            "act_quant_list": "fp32,lsq4_per_tensor,lsq3_per_tensor"
         },
         "phase2": {
             "path": "exp/kernel_depth2kernel_depth_width_bit/phase2",

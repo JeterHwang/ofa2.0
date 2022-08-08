@@ -16,7 +16,7 @@ def round_pass(x):
 
 
 class LsqQuan(Quantizer):
-    def __init__(self, bit, all_positive=False, symmetric=False, per_channel=True):
+    def __init__(self, bit, all_positive=False, symmetric=False, per_channel=True, dynamic=True):
         super().__init__(bit)
 
         self.bitwidth = bit
@@ -28,7 +28,8 @@ class LsqQuan(Quantizer):
         else:
             self.thd_neg = - 2 ** (bit - 1)
             self.thd_pos = 2 ** (bit - 1) - 1
-
+        
+        self.dynamic = dynamic
         self.per_channel = per_channel
         self.s = t.nn.Parameter(t.ones(1))
         self.offset = t.nn.Parameter(t.zeros(1))
@@ -65,22 +66,54 @@ class LsqQuan(Quantizer):
         self.s = t.nn.Parameter((Xmax - Xmin) / (self.thd_pos - self.thd_neg))
         self.offset = t.nn.Parameter(Xmin - self.thd_neg * (Xmax - Xmin) / (self.thd_pos - self.thd_neg))
     
+    def get_active_scale(self, kernel_size=None, channel_size=None):
+        if self.per_channel:
+            step = self.s[:channel_size]
+            if kernel_size is not None:
+                prev_ks = self.kernel_size[0]
+                for ks in self.kernel_size[1:]:
+                    if prev_ks == kernel_size:
+                        break
+                    step = t.mul(step, self.__getattr__(f"{prev_ks}_{ks}_coefficient")[:channel_size])
+                    prev_ks = ks
+        else:
+            xmax, xmin = self.observer()
+            delta = (xmax - xmin) / (self.thd_pos - self.thd_neg)
+            step = self.s * delta
+        return step
+
+    def get_active_offset(self):
+        if self.per_channel:
+            Beta = self.offset
+        else:
+            _, xmin = self.observer()
+            Beta = xmin + self.offset
+        return Beta
+
     def forward(self, x, kernel_size=None):
+        if not self.dynamic:
+            s_grad_scale = 1.0 / ((self.thd_pos * x.numel()) ** 0.5)
+            s_scale = grad_scale(self.s, s_grad_scale)
+            if self.per_channel:
+                x = x / s_scale
+            else:
+                x = (x - self.offset) / s_scale
+            x = t.clamp(x, self.thd_neg, self.thd_pos)
+            x = round_pass(x)
+            if self.per_channel:
+                x = x * s_scale
+            else:
+                x = x * s_scale + self.offset
+            return x
         if self.per_channel:
             channel_size = x.size(0)
+            
+            step = self.get_active_scale(kernel_size, channel_size)
+            
             s_grad_scale = 1.0 / ((self.thd_pos * x.numel()) ** 0.5)
-            
-            step = self.s[:channel_size]
             s_scale = grad_scale(step, s_grad_scale)
-            prev_ks = self.kernel_size[0]
-            for ks in self.kernel_size[1:]:
-                if prev_ks == kernel_size:
-                    break
-                s_scale = t.mul(s_scale, self.__getattr__(f"{prev_ks}_{ks}_coefficient")[:channel_size])
-                prev_ks = ks
-            
+
             x = x / s_scale
-            x = F.hardtanh(x, self.thd_neg, self.thd_pos)
             x = t.clamp(x, self.thd_neg, self.thd_pos)
             x = round_pass(x)
             x = x * s_scale
@@ -89,18 +122,17 @@ class LsqQuan(Quantizer):
             xmax, xmin = self.observer(x)
             delta = (xmax - xmin) / (self.thd_pos - self.thd_neg)
             z = xmin
+            
+            step = self.s * delta
+            Beta = self.offset + z
+            
             s_grad_scale = 1.0 / ((self.thd_pos * x.numel()) ** 0.5)
-            B_grad_scale = 1.0
-            # B_grad_scale = (x.numel()) ** 0.5
-            step = self.s
-            Beta = self.offset
             s_scale = grad_scale(step, s_grad_scale)
-            B_scale = grad_scale(Beta, B_grad_scale)
-            x = (x - B_scale - z) / (s_scale * delta)
-            x = F.hardtanh(x, self.thd_neg, self.thd_pos)
+            
+            x = (x - Beta) / s_scale
             x = t.clamp(x, self.thd_neg, self.thd_pos)
             x = round_pass(x)
-            x = x * s_scale * delta + B_scale + z
+            x = x * s_scale + Beta
         
         return x
 
@@ -111,8 +143,8 @@ class EMA(t.nn.Module):
         self.register_buffer('min_val', t.tensor([]))
         self.register_buffer('max_val', t.tensor([]))
     
-    def forward(self, x):
-        if self.training:
+    def forward(self, x=None):
+        if self.training and x is not None:
             xmax = t.max(x.detach(), dim=1)[0].mean()
             xmin = t.min(x.detach(), dim=1)[0].mean()
         else:

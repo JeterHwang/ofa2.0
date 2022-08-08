@@ -289,22 +289,24 @@ def enable_weight_observer(mod):
         if (mod.activation_post_process.dtype == torch.qint8):
             mod.enable_observer()
 
-def get_fake_quant(fake_quant_type, max_channel=None):
+def get_fake_quant(fake_quant_type, max_channel=None, dynamic=True):
     assert fake_quant_type is not None
     if fake_quant_type in quant_mapping:
         return quant_mapping[fake_quant_type]()
+    elif fake_quant_type =='lsq3_per_tensor' : 
+        return LsqQuan(3, True, False, False, dynamic)
     elif fake_quant_type =='lsq4_per_tensor' : 
-        return LsqQuan(4, True, False, False)
+        return LsqQuan(4, True, False, False, dynamic)
     elif fake_quant_type =='lsq5_per_tensor' : 
-        return LsqQuan(5, True, False, False)
+        return LsqQuan(5, True, False, False, dynamic)
     elif fake_quant_type =='lsq6_per_tensor' : 
-        return LsqQuan(6, True, False, False)
+        return LsqQuan(6, True, False, False, dynamic)
     elif fake_quant_type =='lsq8_per_tensor' : 
-        return LsqQuan(8, True, False, False)
+        return LsqQuan(8, True, False, False, dynamic)
     elif fake_quant_type == 'lsq3_per_channel' :
-        return LsqQuan(3, False, True, True)
+        return LsqQuan(3, False, True, True, dynamic)
     elif fake_quant_type == 'lsq4_per_channel' :
-        return LsqQuan(4, False, True, True)
+        return LsqQuan(4, False, True, True, dynamic)
     elif max_channel is not None:
         if fake_quant_type == 'int4_per_channel':
             return FakeQuantize.with_args(observer=MovingAveragePerChannelMinMaxObserver, quant_min=-7, quant_max=7, 
